@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { 
   GameState, 
   Entity, 
@@ -19,8 +19,15 @@ import {
   COIN_HIT_BOX_SCALE,
   SHIELD_DURATION,
   MAGNET_DURATION,
+  RAPID_FIRE_DURATION,
+  TRIPLE_SHOT_DURATION,
   MAGNET_RANGE,
-  VIRTUAL_FLOOR_Y
+  VIRTUAL_FLOOR_Y,
+  SPAWN_X_RANGE,
+  LASER_SPEED,
+  LASER_COOLDOWN_DEFAULT,
+  LASER_COOLDOWN_RAPID,
+  ASTEROID_SCORE
 } from '../constants';
 import { project, randomRange } from '../utils/gameUtils';
 
@@ -46,16 +53,23 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const speedRef = useRef(INITIAL_SPEED);
   const frameCountRef = useRef(0);
   
-  // Powerups
+  // Powerups & Combat
   const hasShieldRef = useRef(false);
   const shieldTimeRef = useRef(0);
   const hasMagnetRef = useRef(false);
   const magnetTimeRef = useRef(0);
+  const hasRapidFireRef = useRef(false);
+  const rapidFireTimeRef = useRef(0);
+  const hasTripleShotRef = useRef(false);
+  const tripleShotTimeRef = useRef(0);
+  
+  const lastShotFrameRef = useRef(0);
   
   // Entities & Visuals
   const entitiesRef = useRef<Entity[]>([]);
   const particlesRef = useRef<Particle[]>([]);
   const floatingTextsRef = useRef<FloatingText[]>([]);
+  const lasersRef = useRef<Entity[]>([]);
   const shakeRef = useRef(0); // Screen shake intensity
   
   // Player Position
@@ -76,11 +90,67 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
     const scale = FOCAL_LENGTH / (FOCAL_LENGTH + NEAR_Z);
+    // Allow moving slightly beyond visual edge to ensuring corner reachability
     const worldX = (x - centerX) / scale;
     const worldY = (y - centerY) / scale;
 
     targetPosRef.current = { x: worldX, y: worldY };
   }, [gameState]);
+
+  const fireLaser = useCallback(() => {
+    if (gameState !== GameState.PLAYING) return;
+
+    const cooldown = hasRapidFireRef.current ? LASER_COOLDOWN_RAPID : LASER_COOLDOWN_DEFAULT;
+    if (frameCountRef.current - lastShotFrameRef.current < cooldown) return;
+
+    lastShotFrameRef.current = frameCountRef.current;
+    const p = playerPosRef.current;
+
+    const spawnLaser = (offsetX: number) => {
+      lasersRef.current.push({
+        id: Math.random(),
+        x: p.x + offsetX,
+        y: p.y,
+        z: p.z + 50,
+        type: EntityType.LASER,
+        width: 20,
+        height: 20,
+        color: hasRapidFireRef.current ? '#ef4444' : '#06b6d4', // Red for rapid, Cyan default
+        active: true
+      });
+    };
+
+    spawnLaser(0);
+
+    if (hasTripleShotRef.current) {
+        spawnLaser(-60);
+        spawnLaser(60);
+    }
+  }, [gameState]);
+
+  // Keyboard controls for PC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.code === 'Space') {
+            fireLaser();
+        }
+    };
+    // Also attach click to canvas for PC mouse shooting
+    const handleMouseDown = (e: MouseEvent) => {
+        if (e.button === 0) fireLaser(); // Left click
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    if (canvasRef.current) {
+        canvasRef.current.addEventListener('mousedown', handleMouseDown);
+    }
+    return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+        if (canvasRef.current) {
+            canvasRef.current.removeEventListener('mousedown', handleMouseDown);
+        }
+    };
+  }, [fireLaser]);
 
   // Spawning Logic
   const spawnEntity = () => {
@@ -103,20 +173,36 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         color = '#a855f7'; // Purple
         width = 60;
         height = 60;
-    } else if (typeRoll > 0.80) {
+    } else if (typeRoll > 0.94) {
+        type = EntityType.POWERUP_RAPID;
+        color = '#ef4444'; // Red Powerup
+        width = 60;
+        height = 60;
+    } else if (typeRoll > 0.92) {
+        type = EntityType.POWERUP_TRIPLE;
+        color = '#22c55e'; // Green Powerup
+        width = 60;
+        height = 60;
+    } else if (typeRoll > 0.75) {
         type = EntityType.COIN;
         color = '#eab308'; // Gold
         width = 50;
         height = 50;
-    } else if (typeRoll > 0.65) {
+    } else if (typeRoll > 0.60) {
+        type = EntityType.OBSTACLE_ASTEROID; // New destructible
+        color = '#78716c'; // Stone Grey
+        width = 180;
+        height = 150;
+        // Asteroids can spawn more centrally to block paths
+    } else if (typeRoll > 0.50) {
         type = EntityType.OBSTACLE_RING;
         color = '#f97316'; // Orange
         width = 160;
         height = 160;
     }
 
-    // Ensure obstacles are reachable but varied
-    const xPos = randomRange(-600, 600);
+    // Ensure obstacles are reachable: reduced X range
+    const xPos = randomRange(-SPAWN_X_RANGE, SPAWN_X_RANGE);
     
     entitiesRef.current.push({
       id: Date.now() + Math.random(),
@@ -137,13 +223,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     for (let i = 0; i < count; i++) {
       particlesRef.current.push({
         x, y, z,
-        vx: randomRange(-15, 15),
-        vy: randomRange(-15, 15),
-        vz: randomRange(-5, 25),
+        vx: randomRange(-20, 20),
+        vy: randomRange(-20, 20),
+        vz: randomRange(-10, 30),
         life: 1.0,
         maxLife: 1.0,
         color: color,
-        size: randomRange(5, 20)
+        size: randomRange(5, 25)
       });
     }
   };
@@ -202,11 +288,52 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         magnetTimeRef.current--;
         if (magnetTimeRef.current <= 0) hasMagnetRef.current = false;
       }
+      if (hasRapidFireRef.current) {
+        rapidFireTimeRef.current--;
+        if (rapidFireTimeRef.current <= 0) hasRapidFireRef.current = false;
+      }
+      if (hasTripleShotRef.current) {
+        tripleShotTimeRef.current--;
+        if (tripleShotTimeRef.current <= 0) hasTripleShotRef.current = false;
+      }
 
       // Spawn
       if (frameCountRef.current % Math.floor(600 / speedRef.current) === 0) {
         spawnEntity();
       }
+
+      // Update Lasers
+      for (let i = lasersRef.current.length - 1; i >= 0; i--) {
+        const laser = lasersRef.current[i];
+        laser.z += LASER_SPEED;
+        
+        // Remove if too far
+        if (laser.z > SPAWN_Z) {
+            laser.active = false;
+        }
+
+        // Laser Collisions with Asteroids
+        if (laser.active) {
+            for (const ent of entitiesRef.current) {
+                if (!ent.active || ent.type !== EntityType.OBSTACLE_ASTEROID) continue;
+                
+                // Simple 3D box check
+                if (Math.abs(laser.z - ent.z) < 100 && 
+                    Math.abs(laser.x - ent.x) < ent.width && 
+                    Math.abs(laser.y - ent.y) < ent.height) {
+                    
+                    // Hit!
+                    ent.active = false;
+                    laser.active = false;
+                    createExplosion(ent.x, ent.y, ent.z, '#a8a29e', 15);
+                    scoreRef.current += ASTEROID_SCORE;
+                    addFloatingText(`+${ASTEROID_SCORE}`, '#ffffff', ent.x, ent.y, ent.z);
+                    break;
+                }
+            }
+        }
+      }
+      lasersRef.current = lasersRef.current.filter(l => l.active);
 
       // Update Entities
       for (let i = entitiesRef.current.length - 1; i >= 0; i--) {
@@ -233,11 +360,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             
             // Hitbox tuning
             let hitScale = OBSTACLE_HIT_BOX_SCALE;
-            if (ent.type === EntityType.COIN || ent.type === EntityType.SHIELD || ent.type === EntityType.MAGNET) {
+            if (ent.type === EntityType.COIN || ent.type.includes('POWERUP') || ent.type === EntityType.SHIELD || ent.type === EntityType.MAGNET) {
                 hitScale = COIN_HIT_BOX_SCALE;
             }
 
-            const hitDist = (ent.width / 2 + 30) * hitScale; // 30 is base player radius
+            const hitDist = (ent.width / 2 + 30) * hitScale; 
 
             if (xDist < hitDist && yDist < hitDist) {
                 if (ent.type === EntityType.COIN) {
@@ -255,8 +382,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                     magnetTimeRef.current = MAGNET_DURATION;
                     ent.active = false;
                     addFloatingText("MAGNET ON", "#a855f7", p.x, p.y - 50, p.z);
+                } else if (ent.type === EntityType.POWERUP_RAPID) {
+                    hasRapidFireRef.current = true;
+                    rapidFireTimeRef.current = RAPID_FIRE_DURATION;
+                    ent.active = false;
+                    addFloatingText("RAPID FIRE", "#ef4444", p.x, p.y - 50, p.z);
+                } else if (ent.type === EntityType.POWERUP_TRIPLE) {
+                    hasTripleShotRef.current = true;
+                    tripleShotTimeRef.current = TRIPLE_SHOT_DURATION;
+                    ent.active = false;
+                    addFloatingText("TRIPLE SHOT", "#22c55e", p.x, p.y - 50, p.z);
                 } else {
-                    // Obstacle
+                    // Obstacle (Cube, Ring, Asteroid)
                     if (hasShieldRef.current) {
                         hasShieldRef.current = false;
                         createExplosion(ent.x, ent.y, ent.z, ent.color, 10);
@@ -311,13 +448,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     // Floor Plane
     ctx.save();
     ctx.beginPath();
-    // Fill the floor area slightly darker
-    const floorP1 = project(-5000, VIRTUAL_FLOOR_Y, 1, canvas.width, canvas.height);
-    const floorP2 = project(5000, VIRTUAL_FLOOR_Y, 1, canvas.width, canvas.height);
-    const floorP3 = project(5000, VIRTUAL_FLOOR_Y, SPAWN_Z, canvas.width, canvas.height);
-    const floorP4 = project(-5000, VIRTUAL_FLOOR_Y, SPAWN_Z, canvas.width, canvas.height);
-    
-    // Draw a faint floor plane
     const floorGradient = ctx.createLinearGradient(0, canvas.height/2, 0, canvas.height);
     floorGradient.addColorStop(0, 'rgba(15, 23, 42, 0)');
     floorGradient.addColorStop(1, 'rgba(30, 41, 59, 0.5)');
@@ -331,7 +461,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     for (let z = 0; z < SPAWN_Z; z += 500) {
        const renderZ = z - gridOffset;
        if (renderZ < 10) continue;
-       // Extend grid far left/right to cover screen
        const p1 = project(-3000, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
        const p2 = project(3000, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
        ctx.moveTo(p1.x, p1.y);
@@ -348,24 +477,23 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.restore();
 
     // SORTING: Render Shadows first, then objects back-to-front
-    entitiesRef.current.sort((a, b) => b.z - a.z);
+    const allEntities = [...entitiesRef.current, ...lasersRef.current];
+    allEntities.sort((a, b) => b.z - a.z);
 
     // --- DRAW SHADOWS ---
-    // This is the key change for positioning help
     ctx.save();
     entitiesRef.current.forEach(ent => {
-        // Only draw shadow if close enough to be relevant
         if (ent.z < SPAWN_Z) {
             const { x, y, scale } = project(ent.x, VIRTUAL_FLOOR_Y, ent.z, canvas.width, canvas.height);
             const w = ent.width * scale * 1.2;
-            const h = ent.width * scale * 0.3; // Flattened ellipse
+            const h = ent.width * scale * 0.3;
 
             ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
             ctx.beginPath();
             ctx.ellipse(x, y, w/2, h/2, 0, 0, Math.PI * 2);
             ctx.fill();
 
-            // Draw a faint "guideline" connecting shadow to object if it's close
+            // Guideline
             if (ent.z < 1500) {
                 const objPos = project(ent.x, ent.y, ent.z, canvas.width, canvas.height);
                 ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
@@ -390,7 +518,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.ellipse(x, y, w/2, h/2, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Player Guideline
         const pObj = project(p.x, p.y, p.z, canvas.width, canvas.height);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
         ctx.beginPath();
@@ -399,28 +526,47 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.stroke();
     }
     ctx.restore();
-    // --- END SHADOWS ---
-
 
     // --- DRAW ENTITIES ---
-    entitiesRef.current.forEach(ent => {
+    allEntities.forEach(ent => {
         const { x, y, scale } = project(ent.x, ent.y, ent.z, canvas.width, canvas.height);
         const w = ent.width * scale;
         const h = ent.height * scale;
 
         ctx.save();
         ctx.translate(x, y);
-        if (ent.rotation) ctx.rotate(ent.rotation);
+        if (ent.rotation && ent.type !== EntityType.LASER) ctx.rotate(ent.rotation);
         
-        if (ent.type === EntityType.OBSTACLE_CUBE) {
-            // Dangerous look: Spiky Cube
+        if (ent.type === EntityType.LASER) {
+             ctx.fillStyle = ent.color;
+             ctx.shadowBlur = 10;
+             ctx.shadowColor = ent.color;
+             // Draw Laser as a glowing line/beam
+             ctx.fillRect(-w/4, -h*2, w/2, h*4);
+             ctx.shadowBlur = 0;
+        } else if (ent.type === EntityType.OBSTACLE_ASTEROID) {
+            ctx.fillStyle = ent.color;
+            ctx.beginPath();
+            const jaggedness = 5;
+            for(let i=0; i<jaggedness*2; i++){
+                const angle = (Math.PI * 2 * i) / (jaggedness*2);
+                const r = (i % 2 === 0 ? w/2 : w/2.5);
+                ctx.lineTo(Math.cos(angle)*r, Math.sin(angle)*r);
+            }
+            ctx.closePath();
+            ctx.fill();
+            // Cracks detail
+            ctx.strokeStyle = '#57534e';
+            ctx.lineWidth = 2 * scale;
+            ctx.stroke();
+
+        } else if (ent.type === EntityType.OBSTACLE_CUBE) {
             ctx.fillStyle = ent.color;
             ctx.strokeStyle = '#7f1d1d';
             ctx.lineWidth = 4 * scale;
             ctx.fillRect(-w/2, -h/2, w, h);
             ctx.strokeRect(-w/2, -h/2, w, h);
             
-            // Inner "X" for danger
             ctx.beginPath();
             ctx.moveTo(-w/2, -h/2); ctx.lineTo(w/2, h/2);
             ctx.moveTo(w/2, -h/2); ctx.lineTo(-w/2, h/2);
@@ -428,7 +574,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         } else if (ent.type === EntityType.OBSTACLE_RING) {
              ctx.beginPath();
-             // Spikes on ring
              const spikes = 8;
              for(let i=0; i<spikes*2; i++){
                 const r = i%2===0 ? w/2 : w/2 + 20*scale;
@@ -436,10 +581,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
              }
              ctx.closePath();
-             ctx.fillStyle = '#c2410c'; // Dark orange
+             ctx.fillStyle = '#c2410c';
              ctx.fill();
              
-             // Inner hole
              ctx.globalCompositeOperation = 'destination-out';
              ctx.beginPath();
              ctx.arc(0, 0, w/3, 0, Math.PI * 2);
@@ -451,7 +595,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.stroke();
 
         } else if (ent.type === EntityType.COIN) {
-            // Glow
             ctx.shadowColor = ent.color;
             ctx.shadowBlur = 20;
             ctx.beginPath();
@@ -470,7 +613,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.fillText('$', 0, 0);
 
         } else if (ent.type === EntityType.SHIELD) {
-            // Soft Glow
             ctx.shadowColor = '#38bdf8';
             ctx.shadowBlur = 15;
             ctx.beginPath();
@@ -488,7 +630,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.textBaseline = 'middle';
             ctx.fillText('S', 0, 0);
         } else if (ent.type === EntityType.MAGNET) {
-            // Purple Glow
             ctx.shadowColor = '#a855f7';
             ctx.shadowBlur = 15;
             ctx.beginPath();
@@ -505,6 +646,38 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('M', 0, 0);
+        } else if (ent.type === EntityType.POWERUP_RAPID) {
+            ctx.shadowColor = '#ef4444';
+            ctx.shadowBlur = 15;
+            ctx.beginPath();
+            ctx.arc(0, 0, w/2, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3 * scale;
+            ctx.stroke();
+            
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${Math.floor(18*scale)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('RF', 0, 0);
+        } else if (ent.type === EntityType.POWERUP_TRIPLE) {
+            ctx.shadowColor = '#22c55e';
+            ctx.shadowBlur = 15;
+            ctx.beginPath();
+            ctx.arc(0, 0, w/2, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.8)';
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3 * scale;
+            ctx.stroke();
+            
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${Math.floor(18*scale)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('3X', 0, 0);
         }
         
         ctx.restore();
@@ -532,7 +705,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
              ctx.stroke();
         }
         
-        // Magnet Effect (Rings emanating)
+        // Magnet Effect
         if (hasMagnetRef.current) {
             const magScale = (frameCountRef.current % 20) / 20;
             ctx.beginPath();
@@ -546,27 +719,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         if (skin.model === 'biplane') {
             // Biplane
             ctx.fillStyle = skin.color;
-            // Top Wing
             ctx.fillRect(-size/1.5, -size/3, size*1.33, size/6);
-            // Bottom Wing
             ctx.fillRect(-size/1.5, size/10, size*1.33, size/6);
-            // Struts
             ctx.fillStyle = '#525252';
             ctx.fillRect(-size/2, -size/3, size/10, size/2);
             ctx.fillRect(size/2 - size/10, -size/3, size/10, size/2);
-            // Fuselage
             ctx.fillStyle = skin.accent;
             ctx.beginPath();
             ctx.ellipse(0, 0, size/6, size/3, 0, 0, Math.PI*2);
             ctx.fill();
-            // Tail
             ctx.fillStyle = skin.color;
             ctx.beginPath();
             ctx.moveTo(0, -size/3);
             ctx.lineTo(0, -size/1.8);
             ctx.lineTo(size/10, -size/3);
             ctx.fill();
-            // Propeller
             ctx.fillStyle = 'rgba(255,255,255,0.4)';
             ctx.beginPath();
             ctx.arc(0, 0, size/2.5, 0, Math.PI*2);
@@ -574,17 +741,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         } else if (skin.model === 'ufo') {
             // UFO
-            // Dome
-            ctx.fillStyle = '#60a5fa'; // Glassy
+            ctx.fillStyle = '#60a5fa'; 
             ctx.beginPath();
             ctx.arc(0, -size/6, size/4, Math.PI, 0);
             ctx.fill();
-            // Disc
             ctx.fillStyle = skin.color;
             ctx.beginPath();
             ctx.ellipse(0, 0, size/1.2, size/4, 0, 0, Math.PI*2);
             ctx.fill();
-            // Lights
             ctx.fillStyle = skin.accent;
             for(let i=0; i<5; i++) {
                 const lx = (i - 2) * (size/3);
@@ -592,7 +756,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                 ctx.arc(lx, size/8, size/12, 0, Math.PI*2);
                 ctx.fill();
             }
-             // Engine Glow (Bottom)
              ctx.shadowBlur = 15;
              ctx.shadowColor = skin.accent;
              ctx.fillStyle = skin.accent;
@@ -603,35 +766,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         } else {
             // Jet (Default)
-            // Body
             ctx.fillStyle = skin.color;
             ctx.beginPath();
             ctx.moveTo(0, -size/3);
             ctx.lineTo(size/5, size/3);
             ctx.lineTo(-size/5, size/3);
             ctx.fill();
-            // Wings
             ctx.fillStyle = skin.accent;
             ctx.beginPath();
             ctx.moveTo(0, 0);
             ctx.lineTo(size/1.1, size/4);
             ctx.lineTo(size/1.1, size/2.5);
             ctx.lineTo(0, size/3);
-            ctx.fill(); // Right
+            ctx.fill(); 
             ctx.beginPath();
             ctx.moveTo(0, 0);
             ctx.lineTo(-size/1.1, size/4);
             ctx.lineTo(-size/1.1, size/2.5);
             ctx.lineTo(0, size/3);
-            ctx.fill(); // Left
-            // Tail
+            ctx.fill();
             ctx.fillStyle = skin.color;
             ctx.beginPath();
             ctx.moveTo(0, -size/3);
             ctx.lineTo(0, -size/1.5);
             ctx.lineTo(size/8, -size/3);
             ctx.fill();
-            // Engine
             ctx.shadowBlur = 10;
             ctx.shadowColor = '#f59e0b';
             ctx.fillStyle = '#f59e0b';
@@ -713,10 +872,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             const w = (magnetTimeRef.current / MAGNET_DURATION) * 100;
             ctx.fillRect(20, statusY, w, 10);
             ctx.fillText('MAGNET', 20, statusY - 5);
+            statusY += 40;
+        }
+        if (hasRapidFireRef.current) {
+            ctx.fillStyle = '#ef4444';
+            const w = (rapidFireTimeRef.current / RAPID_FIRE_DURATION) * 100;
+            ctx.fillRect(20, statusY, w, 10);
+            ctx.fillText('RAPID FIRE', 20, statusY - 5);
+            statusY += 40;
+        }
+        if (hasTripleShotRef.current) {
+            ctx.fillStyle = '#22c55e';
+            const w = (tripleShotTimeRef.current / TRIPLE_SHOT_DURATION) * 100;
+            ctx.fillRect(20, statusY, w, 10);
+            ctx.fillText('TRIPLE SHOT', 20, statusY - 5);
+            statusY += 40;
         }
     }
 
-  }, [gameState, skin, onCoinCollected, onGameOver]);
+  }, [gameState, skin, onCoinCollected, onGameOver, fireLaser]);
 
   // Main Loop Trigger
   useEffect(() => {
@@ -755,12 +929,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         entitiesRef.current = [];
         particlesRef.current = [];
         floatingTextsRef.current = [];
+        lasersRef.current = [];
         scoreRef.current = 0;
         coinsSessionRef.current = 0;
         speedRef.current = INITIAL_SPEED;
         frameCountRef.current = 0;
         hasShieldRef.current = false;
         hasMagnetRef.current = false;
+        hasRapidFireRef.current = false;
+        hasTripleShotRef.current = false;
         shakeRef.current = 0;
         playerPosRef.current = { x: 0, y: 0, z: NEAR_Z, tilt: 0 };
         targetPosRef.current = { x: 0, y: 0 };
@@ -768,11 +945,21 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   }, [gameState]);
 
   return (
-    <canvas 
-      ref={canvasRef}
-      onPointerMove={handlePointerMove}
-      className="absolute top-0 left-0 w-full h-full cursor-none touch-none"
-    />
+    <>
+      <canvas 
+        ref={canvasRef}
+        onPointerMove={handlePointerMove}
+        className="absolute top-0 left-0 w-full h-full cursor-none touch-none"
+      />
+      {gameState === GameState.PLAYING && (
+        <button
+          className="absolute bottom-8 right-8 w-24 h-24 bg-red-600/80 rounded-full border-4 border-red-400 text-white font-black text-xl shadow-[0_0_20px_rgba(239,68,68,0.6)] active:scale-95 active:bg-red-500 transition-transform z-30 flex items-center justify-center md:hidden"
+          onClick={(e) => { e.stopPropagation(); fireLaser(); }}
+        >
+          FIRE
+        </button>
+      )}
+    </>
   );
 };
 

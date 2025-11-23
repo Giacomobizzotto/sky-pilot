@@ -14,6 +14,20 @@ export const MAX_SPEED = 45;
 export const SPEED_INCREMENT = 0.005; 
 export const PLAYER_SPEED_SMOOTHING = 0.15; 
 export const SPAWN_RATE_INITIAL = 30; 
+export const SPAWN_X_RANGE = 450; // Reduced from ~600 for better reachability
+
+// Combat & Powerups
+export const LASER_SPEED = 80;
+export const LASER_COOLDOWN_DEFAULT = 15; // frames
+export const LASER_COOLDOWN_RAPID = 5; // frames
+export const ASTEROID_SCORE = 50;
+
+export const SHIELD_DURATION = 600; // frames (~10s)
+export const MAGNET_DURATION = 600; 
+export const RAPID_FIRE_DURATION = 600;
+export const TRIPLE_SHOT_DURATION = 600;
+
+export const MAGNET_RANGE = 400;    // World units
 
 // Collision Tuning
 export const OBSTACLE_HIT_BOX_SCALE = 0.6; // Forgiving (smaller than visual)
@@ -22,11 +36,6 @@ export const COIN_HIT_BOX_SCALE = 1.3;     // Generous (larger than visual)
 // Visuals
 export const GRID_SEGMENTS = 20;
 export const GRID_SPACING = 200;
-
-// Powerups
-export const SHIELD_DURATION = 600; // frames (~10s)
-export const MAGNET_DURATION = 600; // frames (~10s)
-export const MAGNET_RANGE = 400;    // World units
 
 // Shop Data
 export const SKINS: PlaneSkin[] = [
@@ -64,4 +73,4 @@ export const SKINS: PlaneSkin[] = [
   { id: 'cyber_punk', name: 'Cyber', model: 'jet', color: '#facc15', accent: '#06b6d4', price: 15000 },
 ];
 
-export const STORAGE_KEY = 'sky_pilot_data_v2';
+export const STORAGE_KEY = 'sky_pilot_data_v3';
