@@ -1,0 +1,5 @@
+{
+  "name": "Sky Pilot 3D",
+  "description": "A pseudo-3D arcade rail shooter where you pilot a plane, dodge obstacles, and collect coins to unlock new skins.",
+  "requestFramePermissions": []
+}
