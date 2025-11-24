@@ -1,37 +1,41 @@
+
 import { PlaneSkin } from './types';
 
 // Rendering Constants
 export const FOCAL_LENGTH = 300;
 export const HORIZON_Y = 0; // Relative to center
 export const FAR_Z = 3000;
-export const NEAR_Z = 50; // Collision plane
+export const NEAR_Z = 180; // Collision happens further out (easier to see/time)
 export const SPAWN_Z = 2500;
-export const VIRTUAL_FLOOR_Y = 450; // The Y-coordinate for shadows
+export const VIRTUAL_FLOOR_Y = 350; // Raised slightly for better perspective on the grid
 
-// Game Mechanics
+// Core Gameplay Mechanics
+export const PLAYABLE_WIDTH = 500; // The player can move this wide
+export const SPAWN_RANGE_X = 380; // Objects spawn in this narrower range (always reachable)
 export const INITIAL_SPEED = 15;
-export const MAX_SPEED = 45;
+export const MAX_SPEED = 50; 
 export const SPEED_INCREMENT = 0.005; 
-export const PLAYER_SPEED_SMOOTHING = 0.15; 
+export const PLAYER_SPEED_SMOOTHING = 0.2; 
 export const SPAWN_RATE_INITIAL = 30; 
-export const SPAWN_X_RANGE = 450; // Reduced from ~600 for better reachability
 
 // Combat & Powerups
-export const LASER_SPEED = 80;
-export const LASER_COOLDOWN_DEFAULT = 15; // frames
-export const LASER_COOLDOWN_RAPID = 5; // frames
-export const ASTEROID_SCORE = 50;
+export const LASER_SPEED = 140; // Increased by 50% (was 90)
+export const LASER_COOLDOWN_DEFAULT = 10; // Slightly faster for auto-fire feel
+export const LASER_COOLDOWN_RAPID = 3; 
+export const ASTEROID_SCORE = 100;
+export const ASTEROID_HP_SMALL = 1;
+export const ASTEROID_HP_LARGE = 3;
 
-export const SHIELD_DURATION = 600; // frames (~10s)
+export const SHIELD_DURATION = 600; 
 export const MAGNET_DURATION = 600; 
 export const RAPID_FIRE_DURATION = 600;
 export const TRIPLE_SHOT_DURATION = 600;
 
-export const MAGNET_RANGE = 400;    // World units
+export const MAGNET_RANGE = 700;    
 
 // Collision Tuning
-export const OBSTACLE_HIT_BOX_SCALE = 0.6; // Forgiving (smaller than visual)
-export const COIN_HIT_BOX_SCALE = 1.3;     // Generous (larger than visual)
+export const OBSTACLE_HIT_BOX_SCALE = 0.75; // Reduced from 0.9 for forgiveness (Game Feel)
+export const COIN_HIT_BOX_SCALE = 2.0; // Huge hitbox for coins/gates
 
 // Visuals
 export const GRID_SEGMENTS = 20;
@@ -40,7 +44,7 @@ export const GRID_SPACING = 200;
 // Shop Data
 export const SKINS: PlaneSkin[] = [
   // Starters
-  { id: 'default', name: 'Ace Red', model: 'jet', color: '#ef4444', accent: '#b91c1c', price: 0 },
+  { id: 'default', name: 'Neon Jet', model: 'jet', color: '#06b6d4', accent: '#ec4899', price: 0 },
   { id: 'blue_biplane', name: 'Sky Baron', model: 'biplane', color: '#3b82f6', accent: '#f59e0b', price: 250 },
   
   // Tier 1 (500 - 1500)

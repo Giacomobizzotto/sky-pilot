@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { 
   GameState, 
@@ -5,7 +6,8 @@ import {
   EntityType, 
   Particle,
   PlaneSkin,
-  FloatingText
+  FloatingText,
+  FloatingTextType
 } from '../types';
 import { 
   FOCAL_LENGTH, 
@@ -23,11 +25,14 @@ import {
   TRIPLE_SHOT_DURATION,
   MAGNET_RANGE,
   VIRTUAL_FLOOR_Y,
-  SPAWN_X_RANGE,
+  PLAYABLE_WIDTH,
+  SPAWN_RANGE_X,
   LASER_SPEED,
   LASER_COOLDOWN_DEFAULT,
   LASER_COOLDOWN_RAPID,
-  ASTEROID_SCORE
+  ASTEROID_SCORE,
+  ASTEROID_HP_SMALL,
+  ASTEROID_HP_LARGE
 } from '../constants';
 import { project, randomRange } from '../utils/gameUtils';
 
@@ -52,6 +57,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const coinsSessionRef = useRef(0);
   const speedRef = useRef(INITIAL_SPEED);
   const frameCountRef = useRef(0);
+  const isCrashingRef = useRef(false);
+  const isFiringRef = useRef(false); // Track if user is holding input
   
   // Powerups & Combat
   const hasShieldRef = useRef(false);
@@ -70,15 +77,31 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const particlesRef = useRef<Particle[]>([]);
   const floatingTextsRef = useRef<FloatingText[]>([]);
   const lasersRef = useRef<Entity[]>([]);
-  const shakeRef = useRef(0); // Screen shake intensity
+  const shakeRef = useRef(0); 
   
   // Player Position
-  const playerPosRef = useRef({ x: 0, y: 0, z: NEAR_Z, tilt: 0 });
+  const playerPosRef = useRef({ x: 0, y: 0, z: NEAR_Z - 50, tilt: 0 }); // Player sits behind collision plane
   const targetPosRef = useRef({ x: 0, y: 0 });
 
   // Input Handling
+  const handlePointerDown = useCallback(() => {
+    isFiringRef.current = true;
+  }, []);
+
+  const handlePointerUp = useCallback(() => {
+    isFiringRef.current = false;
+  }, []);
+
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (gameState !== GameState.PLAYING) return;
+    if (isCrashingRef.current) return;
+    
+    // Auto-fire is active while moving mouse or touching
+    if (e.buttons > 0 || e.pointerType === 'touch') {
+        isFiringRef.current = true;
+    } else {
+        isFiringRef.current = false;
+    }
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -90,15 +113,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
     const scale = FOCAL_LENGTH / (FOCAL_LENGTH + NEAR_Z);
-    // Allow moving slightly beyond visual edge to ensuring corner reachability
-    const worldX = (x - centerX) / scale;
+    
+    // CORRIDOR LOGIC: Clamp the input to the playable width
+    let worldX = (x - centerX) / scale;
+    if (worldX > PLAYABLE_WIDTH) worldX = PLAYABLE_WIDTH;
+    if (worldX < -PLAYABLE_WIDTH) worldX = -PLAYABLE_WIDTH;
+
     const worldY = (y - centerY) / scale;
 
     targetPosRef.current = { x: worldX, y: worldY };
   }, [gameState]);
 
   const fireLaser = useCallback(() => {
-    if (gameState !== GameState.PLAYING) return;
+    if (gameState !== GameState.PLAYING || isCrashingRef.current) return;
 
     const cooldown = hasRapidFireRef.current ? LASER_COOLDOWN_RAPID : LASER_COOLDOWN_DEFAULT;
     if (frameCountRef.current - lastShotFrameRef.current < cooldown) return;
@@ -106,103 +133,88 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     lastShotFrameRef.current = frameCountRef.current;
     const p = playerPosRef.current;
 
-    const spawnLaser = (offsetX: number) => {
+    const spawnLaser = (offsetX: number, vx: number) => {
       lasersRef.current.push({
         id: Math.random(),
         x: p.x + offsetX,
         y: p.y,
         z: p.z + 50,
         type: EntityType.LASER,
-        width: 20,
-        height: 20,
-        color: hasRapidFireRef.current ? '#ef4444' : '#06b6d4', // Red for rapid, Cyan default
-        active: true
+        width: 30, // Thicker lasers
+        height: 30,
+        color: hasRapidFireRef.current ? '#f43f5e' : '#22d3ee', // Neon Red or Neon Cyan
+        active: true,
+        vx: vx
       });
     };
 
-    spawnLaser(0);
+    // Center Shot
+    spawnLaser(0, 0);
 
+    // Triple Shot - Fixed mechanics to have lateral velocity
     if (hasTripleShotRef.current) {
-        spawnLaser(-60);
-        spawnLaser(60);
+        // Left shot (moves left as it goes forward)
+        spawnLaser(-40, -10);
+        // Right shot (moves right as it goes forward)
+        spawnLaser(40, 10);
     }
   }, [gameState]);
-
-  // Keyboard controls for PC
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.code === 'Space') {
-            fireLaser();
-        }
-    };
-    // Also attach click to canvas for PC mouse shooting
-    const handleMouseDown = (e: MouseEvent) => {
-        if (e.button === 0) fireLaser(); // Left click
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    if (canvasRef.current) {
-        canvasRef.current.addEventListener('mousedown', handleMouseDown);
-    }
-    return () => {
-        window.removeEventListener('keydown', handleKeyDown);
-        if (canvasRef.current) {
-            canvasRef.current.removeEventListener('mousedown', handleMouseDown);
-        }
-    };
-  }, [fireLaser]);
 
   // Spawning Logic
   const spawnEntity = () => {
     const typeRoll = Math.random();
     let type = EntityType.OBSTACLE_CUBE;
-    let color = '#ef4444'; // Red
-    let width = 100;
-    let height = 100;
+    let color = '#ef4444'; 
+    let width = 120; // Increased base width for visibility
+    let height = 120;
+    let hp = 1;
     
-    // Default Y position range
-    let yPos = randomRange(-400, 400);
+    // Use random height but keep it somewhat centered vertically
+    let yPos = randomRange(-350, 350);
 
     if (typeRoll > 0.98) {
         type = EntityType.SHIELD;
-        color = '#0ea5e9'; // Cyan
-        width = 60;
-        height = 60;
+        color = '#38bdf8'; 
+        width = 100;
+        height = 100;
     } else if (typeRoll > 0.96) {
         type = EntityType.MAGNET;
-        color = '#a855f7'; // Purple
-        width = 60;
-        height = 60;
+        color = '#c084fc'; 
+        width = 100;
+        height = 100;
     } else if (typeRoll > 0.94) {
         type = EntityType.POWERUP_RAPID;
-        color = '#ef4444'; // Red Powerup
-        width = 60;
-        height = 60;
+        color = '#f43f5e'; 
+        width = 100;
+        height = 100;
     } else if (typeRoll > 0.92) {
         type = EntityType.POWERUP_TRIPLE;
-        color = '#22c55e'; // Green Powerup
-        width = 60;
-        height = 60;
+        color = '#4ade80'; 
+        width = 100;
+        height = 100;
     } else if (typeRoll > 0.75) {
         type = EntityType.COIN;
-        color = '#eab308'; // Gold
-        width = 50;
-        height = 50;
+        color = '#facc15'; 
+        width = 120; // HUGE coin gates
+        height = 120;
     } else if (typeRoll > 0.60) {
-        type = EntityType.OBSTACLE_ASTEROID; // New destructible
-        color = '#78716c'; // Stone Grey
-        width = 180;
-        height = 150;
-        // Asteroids can spawn more centrally to block paths
+        type = EntityType.OBSTACLE_ASTEROID; 
+        color = '#57534e'; 
+        width = 250; 
+        height = 200;
+        hp = ASTEROID_HP_LARGE; // Large asteroids take more hits
     } else if (typeRoll > 0.50) {
-        type = EntityType.OBSTACLE_RING;
-        color = '#f97316'; // Orange
+        type = EntityType.OBSTACLE_ASTEROID; // More asteroids, less rings for farming
+        color = '#57534e';
         width = 160;
-        height = 160;
+        height = 140;
+        hp = ASTEROID_HP_SMALL;
     }
 
-    // Ensure obstacles are reachable: reduced X range
-    const xPos = randomRange(-SPAWN_X_RANGE, SPAWN_X_RANGE);
+    // CORRIDOR LOGIC: Spawn strictly inside the SPAWN RANGE (narrower than Playable)
+    // ensuring objects are always reachable and don't clip walls.
+    const safeSpawnWidth = SPAWN_RANGE_X - (width / 2);
+    const xPos = randomRange(-safeSpawnWidth, safeSpawnWidth);
     
     entitiesRef.current.push({
       id: Date.now() + Math.random(),
@@ -215,33 +227,49 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       height,
       active: true,
       rotation: Math.random() * Math.PI * 2,
-      speedZ: type === EntityType.OBSTACLE_CUBE ? 1 : 1
+      speedZ: type === EntityType.OBSTACLE_CUBE ? 1 : 1,
+      hp: hp,
+      maxHp: hp
     });
   };
 
-  const createExplosion = (x: number, y: number, z: number, color: string, count: number) => {
+  const createExplosion = (x: number, y: number, z: number, color: string, count: number, size: number = 20) => {
     for (let i = 0; i < count; i++) {
       particlesRef.current.push({
         x, y, z,
-        vx: randomRange(-20, 20),
-        vy: randomRange(-20, 20),
-        vz: randomRange(-10, 30),
+        vx: randomRange(-50, 50),
+        vy: randomRange(-50, 50),
+        vz: randomRange(-20, 80),
         life: 1.0,
         maxLife: 1.0,
         color: color,
-        size: randomRange(5, 25)
+        size: randomRange(5, size)
       });
     }
   };
 
-  const addFloatingText = (text: string, color: string, x: number, y: number, z: number) => {
+  const spawnLootCoin = (x: number, y: number, z: number) => {
+      entitiesRef.current.push({
+          id: Math.random(),
+          x, y, z,
+          type: EntityType.COIN,
+          width: 80,
+          height: 80,
+          color: '#facc15',
+          active: true,
+          autoCollect: true // Loot coins automatically fly to player
+      });
+  };
+
+  const addFloatingText = (text: string, color: string, x: number, y: number, z: number, type: FloatingTextType = FloatingTextType.SCORE) => {
     floatingTextsRef.current.push({
       id: Math.random(),
       x, y, z,
       text,
       color,
       life: 1.0,
-      velocity: -2 // floats up
+      velocity: type === FloatingTextType.SCORE ? -5 : -1, // Score floats up faster
+      type
     });
   };
 
@@ -253,81 +281,115 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const update = useCallback((canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
     // 1. Logic Update
     if (gameState === GameState.PLAYING) {
-      frameCountRef.current++;
-      
-      // Speed Increase
-      if (speedRef.current < MAX_SPEED) {
-        speedRef.current += SPEED_INCREMENT;
+      if (!isCrashingRef.current) {
+        frameCountRef.current++;
+        
+        // AUTO FIRE CHECK
+        if (isFiringRef.current) {
+            fireLaser();
+        }
+
+        if (speedRef.current < MAX_SPEED) {
+          speedRef.current += SPEED_INCREMENT;
+        }
+        
+        scoreRef.current += Math.floor(speedRef.current / 5);
+      } else {
+        // Slow motion effect during crash
+        speedRef.current *= 0.90;
       }
-      
-      // Score
-      scoreRef.current += Math.floor(speedRef.current / 5);
 
       // Player Movement
       const p = playerPosRef.current;
       const t = targetPosRef.current;
-      const dx = t.x - p.x;
-      const dy = t.y - p.y;
-      p.x += dx * PLAYER_SPEED_SMOOTHING;
-      p.y += dy * PLAYER_SPEED_SMOOTHING;
-      p.tilt += (dx * -0.002 - p.tilt) * 0.1;
+      
+      if (!isCrashingRef.current) {
+        const dx = t.x - p.x;
+        const dy = t.y - p.y;
+        p.x += dx * PLAYER_SPEED_SMOOTHING;
+        p.y += dy * PLAYER_SPEED_SMOOTHING;
+        
+        if (p.y > VIRTUAL_FLOOR_Y - 50) p.y = VIRTUAL_FLOOR_Y - 50;
+        if (p.y < -VIRTUAL_FLOOR_Y + 50) p.y = -VIRTUAL_FLOOR_Y + 50;
+        
+        // Ensure player stays in bounds
+        if (p.x > PLAYABLE_WIDTH) p.x = PLAYABLE_WIDTH;
+        if (p.x < -PLAYABLE_WIDTH) p.x = -PLAYABLE_WIDTH;
 
-      // Clamp Player Y to avoid going under virtual floor
-      if (p.y > VIRTUAL_FLOOR_Y - 50) p.y = VIRTUAL_FLOOR_Y - 50;
-      if (p.y < -VIRTUAL_FLOOR_Y + 50) p.y = -VIRTUAL_FLOOR_Y + 50;
+        p.tilt += (dx * -0.003 - p.tilt) * 0.15;
+      }
 
       // Powerup Timers
-      if (hasShieldRef.current) {
-        shieldTimeRef.current--;
-        if (shieldTimeRef.current <= 0) {
-          hasShieldRef.current = false;
-          addFloatingText("SHIELD DOWN", "#ffffff", p.x, p.y - 100, p.z);
+      if (!isCrashingRef.current) {
+        if (hasShieldRef.current) {
+          shieldTimeRef.current--;
+          if (shieldTimeRef.current <= 0) {
+            hasShieldRef.current = false;
+            addFloatingText("SHIELD DOWN", "#ffffff", 0, 0, 0, FloatingTextType.NOTIFICATION);
+          }
         }
-      }
-      if (hasMagnetRef.current) {
-        magnetTimeRef.current--;
-        if (magnetTimeRef.current <= 0) hasMagnetRef.current = false;
-      }
-      if (hasRapidFireRef.current) {
-        rapidFireTimeRef.current--;
-        if (rapidFireTimeRef.current <= 0) hasRapidFireRef.current = false;
-      }
-      if (hasTripleShotRef.current) {
-        tripleShotTimeRef.current--;
-        if (tripleShotTimeRef.current <= 0) hasTripleShotRef.current = false;
-      }
+        if (hasMagnetRef.current) {
+          magnetTimeRef.current--;
+          if (magnetTimeRef.current <= 0) hasMagnetRef.current = false;
+        }
+        if (hasRapidFireRef.current) {
+          rapidFireTimeRef.current--;
+          if (rapidFireTimeRef.current <= 0) hasRapidFireRef.current = false;
+        }
+        if (hasTripleShotRef.current) {
+          tripleShotTimeRef.current--;
+          if (tripleShotTimeRef.current <= 0) hasTripleShotRef.current = false;
+        }
 
-      // Spawn
-      if (frameCountRef.current % Math.floor(600 / speedRef.current) === 0) {
-        spawnEntity();
+        const spawnRate = Math.max(10, Math.floor(500 / speedRef.current));
+        if (frameCountRef.current % spawnRate === 0) {
+          spawnEntity();
+        }
       }
 
       // Update Lasers
       for (let i = lasersRef.current.length - 1; i >= 0; i--) {
         const laser = lasersRef.current[i];
         laser.z += LASER_SPEED;
+        if (laser.vx) laser.x += laser.vx; // Handle lateral bullet movement (Triple Shot)
         
-        // Remove if too far
         if (laser.z > SPAWN_Z) {
             laser.active = false;
         }
 
-        // Laser Collisions with Asteroids
-        if (laser.active) {
+        if (laser.active && !isCrashingRef.current) {
             for (const ent of entitiesRef.current) {
                 if (!ent.active || ent.type !== EntityType.OBSTACLE_ASTEROID) continue;
                 
-                // Simple 3D box check
-                if (Math.abs(laser.z - ent.z) < 100 && 
+                if (Math.abs(laser.z - ent.z) < 150 && 
                     Math.abs(laser.x - ent.x) < ent.width && 
                     Math.abs(laser.y - ent.y) < ent.height) {
                     
-                    // Hit!
-                    ent.active = false;
                     laser.active = false;
-                    createExplosion(ent.x, ent.y, ent.z, '#a8a29e', 15);
-                    scoreRef.current += ASTEROID_SCORE;
-                    addFloatingText(`+${ASTEROID_SCORE}`, '#ffffff', ent.x, ent.y, ent.z);
+                    
+                    // Hit logic
+                    ent.hp = (ent.hp || 1) - 1;
+                    
+                    // Spark Effect
+                    createExplosion(ent.x, ent.y, ent.z, '#22d3ee', 5, 10);
+                    
+                    if (ent.hp <= 0) {
+                        // Destroyed
+                        ent.active = false;
+                        createExplosion(ent.x, ent.y, ent.z, '#fcd34d', 20, 30);
+                        createExplosion(ent.x, ent.y, ent.z, '#ef4444', 10, 20);
+                        
+                        scoreRef.current += ASTEROID_SCORE;
+                        addFloatingText(`+${ASTEROID_SCORE}`, '#fcd34d', ent.x, ent.y, ent.z, FloatingTextType.SCORE);
+                        addShake(5);
+                        
+                        // SPAWN LOOT
+                        spawnLootCoin(ent.x, ent.y, ent.z);
+                    } else {
+                        // Flash white on hit logic would go here in rendering
+                        addShake(2);
+                    }
+                    
                     break;
                 }
             }
@@ -339,78 +401,84 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       for (let i = entitiesRef.current.length - 1; i >= 0; i--) {
         const ent = entitiesRef.current[i];
         ent.z -= speedRef.current;
-        if (ent.rotation !== undefined) ent.rotation += 0.05;
+        if (ent.rotation !== undefined) ent.rotation += 0.03;
 
-        // Magnet Logic
-        if (hasMagnetRef.current && ent.type === EntityType.COIN && ent.z < 1500) {
+        // Magnet Logic (Normal Magnet OR AutoCollect Loot)
+        const isAutoLoot = ent.type === EntityType.COIN && ent.autoCollect;
+        if ((hasMagnetRef.current || isAutoLoot) && ent.type === EntityType.COIN && ent.z < 2000 && !isCrashingRef.current) {
             const dx = p.x - ent.x;
             const dy = p.y - ent.y;
             const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist < MAGNET_RANGE) {
-                ent.x += dx * 0.1;
-                ent.y += dy * 0.1;
-                ent.z -= 10; // Pull closer faster
+            
+            // AutoLoot has infinite range, normal magnet has fixed range
+            if (isAutoLoot || dist < MAGNET_RANGE) {
+                const pullStrength = isAutoLoot ? 0.25 : 0.15; // Auto loot is faster
+                ent.x += dx * pullStrength;
+                ent.y += dy * pullStrength;
+                ent.z -= 25; // Pull closer in Z too
             }
         }
 
         // Collision Check
-        if (ent.z < NEAR_Z + 50 && ent.z > NEAR_Z - 50 && ent.active) {
+        if (ent.z < NEAR_Z + 100 && ent.z > NEAR_Z - 50 && ent.active && !isCrashingRef.current) {
             const xDist = Math.abs(ent.x - p.x);
             const yDist = Math.abs(ent.y - p.y);
             
-            // Hitbox tuning
             let hitScale = OBSTACLE_HIT_BOX_SCALE;
             if (ent.type === EntityType.COIN || ent.type.includes('POWERUP') || ent.type === EntityType.SHIELD || ent.type === EntityType.MAGNET) {
                 hitScale = COIN_HIT_BOX_SCALE;
             }
 
-            const hitDist = (ent.width / 2 + 30) * hitScale; 
-
-            if (xDist < hitDist && yDist < hitDist) {
+            if (xDist < (ent.width/2 + 20) * hitScale && yDist < (ent.height/2 + 20) * hitScale) {
                 if (ent.type === EntityType.COIN) {
                     onCoinCollected();
                     coinsSessionRef.current++;
                     ent.active = false;
-                    addFloatingText("+1 COIN", "#fcd34d", ent.x, ent.y, ent.z);
+                    addFloatingText("+1", "#fcd34d", ent.x, ent.y, ent.z, FloatingTextType.SCORE);
                 } else if (ent.type === EntityType.SHIELD) {
                     hasShieldRef.current = true;
                     shieldTimeRef.current = SHIELD_DURATION;
                     ent.active = false;
-                    addFloatingText("SHIELD ACTIVE", "#0ea5e9", p.x, p.y - 50, p.z);
+                    addFloatingText("SHIELD ACTIVE", "#0ea5e9", 0, 0, 0, FloatingTextType.NOTIFICATION);
                 } else if (ent.type === EntityType.MAGNET) {
                     hasMagnetRef.current = true;
                     magnetTimeRef.current = MAGNET_DURATION;
                     ent.active = false;
-                    addFloatingText("MAGNET ON", "#a855f7", p.x, p.y - 50, p.z);
+                    addFloatingText("MAGNET ACTIVE", "#c084fc", 0, 0, 0, FloatingTextType.NOTIFICATION);
                 } else if (ent.type === EntityType.POWERUP_RAPID) {
                     hasRapidFireRef.current = true;
                     rapidFireTimeRef.current = RAPID_FIRE_DURATION;
                     ent.active = false;
-                    addFloatingText("RAPID FIRE", "#ef4444", p.x, p.y - 50, p.z);
+                    addFloatingText("RAPID FIRE", "#f43f5e", 0, 0, 0, FloatingTextType.NOTIFICATION);
                 } else if (ent.type === EntityType.POWERUP_TRIPLE) {
                     hasTripleShotRef.current = true;
                     tripleShotTimeRef.current = TRIPLE_SHOT_DURATION;
                     ent.active = false;
-                    addFloatingText("TRIPLE SHOT", "#22c55e", p.x, p.y - 50, p.z);
+                    addFloatingText("TRIPLE SHOT", "#4ade80", 0, 0, 0, FloatingTextType.NOTIFICATION);
                 } else {
-                    // Obstacle (Cube, Ring, Asteroid)
+                    // Impact
                     if (hasShieldRef.current) {
                         hasShieldRef.current = false;
-                        createExplosion(ent.x, ent.y, ent.z, ent.color, 10);
+                        createExplosion(ent.x, ent.y, ent.z, ent.color, 15);
                         ent.active = false;
-                        addShake(10);
-                        addFloatingText("SHIELD BROKEN", "#ef4444", p.x, p.y - 50, p.z);
+                        addShake(15);
+                        addFloatingText("BLOCKED", "#38bdf8", ent.x, ent.y, ent.z, FloatingTextType.SCORE);
+                        addFloatingText("SHIELD BROKEN", "#ef4444", 0, 0, 0, FloatingTextType.NOTIFICATION);
                     } else {
-                        // Game Over
-                        createExplosion(p.x, p.y, p.z, skin.color, 50);
-                        addShake(30);
-                        onGameOver(scoreRef.current, coinsSessionRef.current);
-                        return; // Stop logic loop
+                        // CRASH SEQUENCE START
+                        isCrashingRef.current = true;
+                        createExplosion(p.x, p.y, p.z, skin.color, 60);
+                        addShake(40);
+                        // Trigger slow mo then game over
+                        setTimeout(() => {
+                           onGameOver(scoreRef.current, coinsSessionRef.current);
+                        }, 800); 
                     }
                 }
             }
         }
 
+        // Cleanup
         if (ent.z < -FOCAL_LENGTH) {
             ent.active = false;
         }
@@ -418,16 +486,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       entitiesRef.current = entitiesRef.current.filter(e => e.active);
     }
 
-    // Screen Shake Decay
     if (shakeRef.current > 0) {
         shakeRef.current *= 0.9;
         if (shakeRef.current < 0.5) shakeRef.current = 0;
     }
 
-    // 2. Rendering
+    // --- 2. RENDERING ---
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Camera Shake
     ctx.save();
     if (shakeRef.current > 0) {
         const dx = (Math.random() - 0.5) * shakeRef.current;
@@ -435,100 +501,130 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.translate(dx, dy);
     }
 
-    // Gradient Sky
-    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    gradient.addColorStop(0, '#0f172a'); 
-    gradient.addColorStop(1, '#334155'); 
-    ctx.fillStyle = gradient;
-    ctx.fillRect(-20, -20, canvas.width + 40, canvas.height + 40); // Overdraw for shake
+    // BG
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    bgGrad.addColorStop(0, '#020617'); 
+    bgGrad.addColorStop(1, '#2e1065'); 
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(-20, -20, canvas.width + 40, canvas.height + 40);
 
-    // Grid (Pseudo-3D Floor)
-    const gridOffset = (frameCountRef.current * speedRef.current) % 500;
-    
-    // Floor Plane
+    // Sun
     ctx.save();
+    const sunY = canvas.height / 2 - 50;
+    const sunGrad = ctx.createLinearGradient(0, sunY - 100, 0, sunY + 100);
+    sunGrad.addColorStop(0, '#f59e0b');
+    sunGrad.addColorStop(1, '#db2777');
+    ctx.fillStyle = sunGrad;
     ctx.beginPath();
-    const floorGradient = ctx.createLinearGradient(0, canvas.height/2, 0, canvas.height);
-    floorGradient.addColorStop(0, 'rgba(15, 23, 42, 0)');
-    floorGradient.addColorStop(1, 'rgba(30, 41, 59, 0.5)');
-    ctx.fillStyle = floorGradient;
-    ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
+    ctx.arc(canvas.width / 2, sunY, 150, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#2e1065';
+    for(let i=0; i<10; i++) {
+        ctx.fillRect(canvas.width/2 - 160, sunY + 20 + (i*12), 320, 4 + (i*0.5));
+    }
+    ctx.restore();
 
-    // Grid Lines (Horizontal)
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
+    // GRID
+    const gridOffset = (frameCountRef.current * speedRef.current) % 400;
+    
+    const drawLine = (xWorld: number, color: string, width: number, glow: boolean) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        if (glow) {
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = color;
+        } else {
+            ctx.shadowBlur = 0;
+        }
+        
+        ctx.beginPath();
+        const pStart = project(xWorld, VIRTUAL_FLOOR_Y, 1, canvas.width, canvas.height);
+        const pEnd = project(xWorld, VIRTUAL_FLOOR_Y, SPAWN_Z, canvas.width, canvas.height);
+        ctx.moveTo(pStart.x, pStart.y);
+        ctx.lineTo(pEnd.x, pEnd.y);
+        ctx.stroke();
+        ctx.shadowBlur = 0; 
+    };
+
+    // Playable Area Borders
+    drawLine(-PLAYABLE_WIDTH, '#d946ef', 4, true); 
+    drawLine(PLAYABLE_WIDTH, '#d946ef', 4, true);
+
+    // Spawn Area Markers (Subtle) to show where items might be
+    drawLine(-SPAWN_RANGE_X, 'rgba(217, 70, 239, 0.2)', 1, false);
+    drawLine(SPAWN_RANGE_X, 'rgba(217, 70, 239, 0.2)', 1, false);
+
+    ctx.setLineDash([20, 20]);
+    drawLine(0, 'rgba(6, 182, 212, 0.3)', 2, false); 
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = 'rgba(217, 70, 239, 0.4)'; 
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (let z = 0; z < SPAWN_Z; z += 500) {
+    for (let z = 0; z < SPAWN_Z; z += 400) {
        const renderZ = z - gridOffset;
        if (renderZ < 10) continue;
-       const p1 = project(-3000, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
-       const p2 = project(3000, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
+       const p1 = project(-PLAYABLE_WIDTH * 1.5, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
+       const p2 = project(PLAYABLE_WIDTH * 1.5, VIRTUAL_FLOOR_Y, renderZ, canvas.width, canvas.height);
        ctx.moveTo(p1.x, p1.y);
        ctx.lineTo(p2.x, p2.y);
     }
-    // Grid Lines (Vertical/Perspective)
-    for (let x = -2000; x <= 2000; x += 500) {
-        const pStart = project(x, VIRTUAL_FLOOR_Y, 1, canvas.width, canvas.height);
-        const pEnd = project(x, VIRTUAL_FLOOR_Y, SPAWN_Z, canvas.width, canvas.height);
-        ctx.moveTo(pStart.x, pStart.y);
-        ctx.lineTo(pEnd.x, pEnd.y);
-    }
     ctx.stroke();
-    ctx.restore();
 
-    // SORTING: Render Shadows first, then objects back-to-front
+    // ENTITIES
     const allEntities = [...entitiesRef.current, ...lasersRef.current];
     allEntities.sort((a, b) => b.z - a.z);
 
-    // --- DRAW SHADOWS ---
-    ctx.save();
-    entitiesRef.current.forEach(ent => {
-        if (ent.z < SPAWN_Z) {
-            const { x, y, scale } = project(ent.x, VIRTUAL_FLOOR_Y, ent.z, canvas.width, canvas.height);
-            const w = ent.width * scale * 1.2;
-            const h = ent.width * scale * 0.3;
-
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-            ctx.beginPath();
-            ctx.ellipse(x, y, w/2, h/2, 0, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Guideline
-            if (ent.z < 1500) {
-                const objPos = project(ent.x, ent.y, ent.z, canvas.width, canvas.height);
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(objPos.x, objPos.y);
-                ctx.stroke();
-            }
+    // Draw Shadows & ANCHOR LINES first
+    allEntities.forEach(ent => {
+        if (!ent.active) return;
+        
+        // Fading logic for things getting too close or behind
+        let alpha = 1.0;
+        if (ent.z < NEAR_Z + 100) {
+             alpha = (ent.z - (NEAR_Z - 50)) / 150; // Fade out as it passes collision point
+             if (alpha < 0) alpha = 0;
         }
+        
+        ctx.globalAlpha = alpha;
+
+        const { x, y, scale } = project(ent.x, ent.y, ent.z, canvas.width, canvas.height);
+        
+        // GROUND ANCHOR LINE (Crucial for aiming)
+        // Project the point on the floor directly below the object
+        const floorP = project(ent.x, VIRTUAL_FLOOR_Y, ent.z, canvas.width, canvas.height);
+
+        // Only draw anchor for gameplay objects
+        if (ent.type !== EntityType.LASER) {
+            ctx.beginPath();
+            ctx.strokeStyle = ent.color;
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = alpha * 0.5; // Faint line
+            ctx.moveTo(x, y);
+            ctx.lineTo(floorP.x, floorP.y);
+            ctx.stroke();
+            
+            // Floor Spot
+            ctx.beginPath();
+            ctx.fillStyle = ent.color;
+            ctx.arc(floorP.x, floorP.y, 5 * scale, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        ctx.globalAlpha = 1.0;
     });
 
-    // Player Shadow
-    if (gameState === GameState.PLAYING) {
-        const p = playerPosRef.current;
-        const { x, y, scale } = project(p.x, VIRTUAL_FLOOR_Y, p.z, canvas.width, canvas.height);
-        const w = 120 * scale;
-        const h = 40 * scale;
-        
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.beginPath();
-        ctx.ellipse(x, y, w/2, h/2, 0, 0, Math.PI * 2);
-        ctx.fill();
-        
-        const pObj = project(p.x, p.y, p.z, canvas.width, canvas.height);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(pObj.x, pObj.y);
-        ctx.stroke();
-    }
-    ctx.restore();
-
-    // --- DRAW ENTITIES ---
+    // Draw Objects
     allEntities.forEach(ent => {
+        if (!ent.active) return;
+        
+        let alpha = 1.0;
+        if (ent.z < NEAR_Z + 100) {
+             alpha = (ent.z - (NEAR_Z - 50)) / 150;
+             if (alpha < 0) alpha = 0;
+        }
+        ctx.globalAlpha = alpha;
+
         const { x, y, scale } = project(ent.x, ent.y, ent.z, canvas.width, canvas.height);
         const w = ent.width * scale;
         const h = ent.height * scale;
@@ -537,36 +633,64 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.translate(x, y);
         if (ent.rotation && ent.type !== EntityType.LASER) ctx.rotate(ent.rotation);
         
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = ent.color;
+
         if (ent.type === EntityType.LASER) {
              ctx.fillStyle = ent.color;
-             ctx.shadowBlur = 10;
-             ctx.shadowColor = ent.color;
-             // Draw Laser as a glowing line/beam
-             ctx.fillRect(-w/4, -h*2, w/2, h*4);
-             ctx.shadowBlur = 0;
+             ctx.shadowBlur = 20;
+             ctx.fillRect(-w/2, -h*2, w, h*4);
+             ctx.fillStyle = '#ffffff';
+             ctx.fillRect(-w/4, -h*1.5, w/2, h*3);
+
         } else if (ent.type === EntityType.OBSTACLE_ASTEROID) {
-            ctx.fillStyle = ent.color;
+            // "Cracked Neon" Asteroid Style
+            const isHit = (ent.maxHp && ent.hp && ent.hp < ent.maxHp);
+            
+            // Core
+            ctx.fillStyle = '#1e1b4b'; // Dark blue/black core
+            ctx.strokeStyle = isHit ? '#f87171' : '#f472b6'; // Red if damaged, Pink default
+            ctx.lineWidth = 3 * scale;
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = ctx.strokeStyle;
+            
             ctx.beginPath();
-            const jaggedness = 5;
+            const jaggedness = 7;
             for(let i=0; i<jaggedness*2; i++){
                 const angle = (Math.PI * 2 * i) / (jaggedness*2);
-                const r = (i % 2 === 0 ? w/2 : w/2.5);
+                const r = (i % 2 === 0 ? w/2 : w/2.2);
                 ctx.lineTo(Math.cos(angle)*r, Math.sin(angle)*r);
             }
             ctx.closePath();
             ctx.fill();
-            // Cracks detail
-            ctx.strokeStyle = '#57534e';
-            ctx.lineWidth = 2 * scale;
             ctx.stroke();
 
+            // Internal Cracks/Neon Pulse
+            ctx.beginPath();
+            ctx.strokeStyle = isHit ? '#ef4444' : '#c084fc';
+            ctx.lineWidth = 1 * scale;
+            ctx.moveTo(-w/4, -h/4); ctx.lineTo(0, 0); ctx.lineTo(w/4, -h/6);
+            ctx.moveTo(w/4, h/4); ctx.lineTo(0, h/6);
+            ctx.stroke();
+            
+            // HP Bar for big ones
+            if (ent.maxHp && ent.maxHp > 1) {
+                const barW = w * 0.8;
+                ctx.fillStyle = 'black';
+                ctx.fillRect(-barW/2, -h/1.2, barW, 6*scale);
+                ctx.fillStyle = '#ef4444';
+                const hpPct = (ent.hp || 0) / ent.maxHp;
+                ctx.fillRect(-barW/2, -h/1.2, barW * hpPct, 6*scale);
+            }
+
         } else if (ent.type === EntityType.OBSTACLE_CUBE) {
-            ctx.fillStyle = ent.color;
-            ctx.strokeStyle = '#7f1d1d';
+            // Tech Obstacles
+            ctx.strokeStyle = ent.color;
             ctx.lineWidth = 4 * scale;
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.3)'; // Red tint inside
             ctx.fillRect(-w/2, -h/2, w, h);
             ctx.strokeRect(-w/2, -h/2, w, h);
-            
+            // Cross
             ctx.beginPath();
             ctx.moveTo(-w/2, -h/2); ctx.lineTo(w/2, h/2);
             ctx.moveTo(w/2, -h/2); ctx.lineTo(-w/2, h/2);
@@ -574,116 +698,77 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
         } else if (ent.type === EntityType.OBSTACLE_RING) {
              ctx.beginPath();
-             const spikes = 8;
-             for(let i=0; i<spikes*2; i++){
-                const r = i%2===0 ? w/2 : w/2 + 20*scale;
-                const a = (Math.PI*2 * i) / (spikes*2);
-                ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
-             }
-             ctx.closePath();
-             ctx.fillStyle = '#c2410c';
-             ctx.fill();
-             
-             ctx.globalCompositeOperation = 'destination-out';
-             ctx.beginPath();
-             ctx.arc(0, 0, w/3, 0, Math.PI * 2);
-             ctx.fill();
-             ctx.globalCompositeOperation = 'source-over';
-             
+             ctx.arc(0, 0, w/2, 0, Math.PI * 2);
              ctx.strokeStyle = ent.color;
-             ctx.lineWidth = 5 * scale;
+             ctx.lineWidth = 8 * scale;
+             ctx.stroke();
+             // Danger Spikes
+             const spikes = 6;
+             ctx.beginPath();
+             for(let i=0; i<spikes; i++){
+                const a = (Math.PI*2 * i) / spikes;
+                const ox = Math.cos(a) * w/1.5;
+                const oy = Math.sin(a) * w/1.5;
+                const ix = Math.cos(a) * w/2;
+                const iy = Math.sin(a) * w/2;
+                ctx.moveTo(ix, iy);
+                ctx.lineTo(ox, oy);
+             }
              ctx.stroke();
 
         } else if (ent.type === EntityType.COIN) {
-            ctx.shadowColor = ent.color;
+            // GIANT HOLOGRAPHIC GATE
             ctx.shadowBlur = 20;
+            ctx.strokeStyle = ent.color;
+            ctx.lineWidth = 6 * scale;
             ctx.beginPath();
             ctx.arc(0, 0, w/2, 0, Math.PI * 2);
-            ctx.fillStyle = ent.color;
-            ctx.fill();
-            ctx.strokeStyle = '#fffbeb';
-            ctx.lineWidth = 3 * scale;
             ctx.stroke();
-            ctx.shadowBlur = 0;
+
+            // Inner fill (inviting)
+            ctx.fillStyle = 'rgba(250, 204, 21, 0.2)'; 
+            ctx.fill();
             
             ctx.fillStyle = '#fffbeb';
-            ctx.font = `bold ${Math.floor(25*scale)}px sans-serif`;
+            ctx.font = `bold ${Math.floor(40*scale)}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
+            ctx.shadowBlur = 0;
             ctx.fillText('$', 0, 0);
-
-        } else if (ent.type === EntityType.SHIELD) {
-            ctx.shadowColor = '#38bdf8';
-            ctx.shadowBlur = 15;
+        
+        } else if (ent.type.includes('POWERUP') || ent.type === EntityType.SHIELD || ent.type === EntityType.MAGNET) {
+            ctx.shadowBlur = 25;
+            ctx.fillStyle = ent.color;
+            ctx.globalAlpha = alpha * 0.9;
             ctx.beginPath();
             ctx.arc(0, 0, w/2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(56, 189, 248, 0.8)';
             ctx.fill();
-            ctx.strokeStyle = '#ffffff';
+            
+            // Outer Ring
+            ctx.strokeStyle = 'white';
             ctx.lineWidth = 3 * scale;
             ctx.stroke();
+            
             ctx.shadowBlur = 0;
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${Math.floor(30*scale)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
             
-            ctx.fillStyle = 'white';
-            ctx.font = `bold ${Math.floor(20*scale)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('S', 0, 0);
-        } else if (ent.type === EntityType.MAGNET) {
-            ctx.shadowColor = '#a855f7';
-            ctx.shadowBlur = 15;
-            ctx.beginPath();
-            ctx.arc(0, 0, w/2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(168, 85, 247, 0.8)';
-            ctx.fill();
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 3 * scale;
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-
-            ctx.fillStyle = 'white';
-            ctx.font = `bold ${Math.floor(20*scale)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('M', 0, 0);
-        } else if (ent.type === EntityType.POWERUP_RAPID) {
-            ctx.shadowColor = '#ef4444';
-            ctx.shadowBlur = 15;
-            ctx.beginPath();
-            ctx.arc(0, 0, w/2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
-            ctx.fill();
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 3 * scale;
-            ctx.stroke();
+            let label = '?';
+            if (ent.type === EntityType.SHIELD) label = 'S';
+            if (ent.type === EntityType.MAGNET) label = 'M';
+            if (ent.type === EntityType.POWERUP_RAPID) label = 'RF';
+            if (ent.type === EntityType.POWERUP_TRIPLE) label = '3X';
             
-            ctx.fillStyle = 'white';
-            ctx.font = `bold ${Math.floor(18*scale)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('RF', 0, 0);
-        } else if (ent.type === EntityType.POWERUP_TRIPLE) {
-            ctx.shadowColor = '#22c55e';
-            ctx.shadowBlur = 15;
-            ctx.beginPath();
-            ctx.arc(0, 0, w/2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(34, 197, 94, 0.8)';
-            ctx.fill();
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 3 * scale;
-            ctx.stroke();
-            
-            ctx.fillStyle = 'white';
-            ctx.font = `bold ${Math.floor(18*scale)}px sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('3X', 0, 0);
+            ctx.fillText(label, 0, 0);
         }
         
         ctx.restore();
+        ctx.globalAlpha = 1.0;
     });
 
-    // 5. Draw Player
+    // Player Rendering
     if (gameState === GameState.PLAYING) {
         const p = playerPosRef.current;
         const { x: px, y: py, scale: pScale } = project(p.x, p.y, p.z, canvas.width, canvas.height);
@@ -692,207 +777,268 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         ctx.translate(px, py);
         ctx.rotate(p.tilt);
         
+        // GLITCH EFFECT
+        if (isCrashingRef.current && shakeRef.current > 5) {
+             const jx = (Math.random() - 0.5) * 20;
+             const jy = (Math.random() - 0.5) * 20;
+             ctx.translate(jx, jy);
+             
+             ctx.globalCompositeOperation = 'screen';
+             ctx.fillStyle = 'rgba(255, 0, 255, 0.5)';
+             ctx.fillRect(-50*pScale, -20*pScale, 100*pScale, 40*pScale);
+             ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+             ctx.fillRect(-45*pScale, -15*pScale, 100*pScale, 40*pScale);
+             ctx.globalCompositeOperation = 'source-over';
+        }
+
         const size = 100 * pScale;
-
-        // Shield Effect
-        if (hasShieldRef.current) {
-             ctx.beginPath();
-             ctx.arc(0, 0, size * 0.9, 0, Math.PI * 2);
-             ctx.fillStyle = `rgba(14, 165, 233, ${0.2 + Math.sin(frameCountRef.current * 0.2) * 0.1})`;
-             ctx.fill();
-             ctx.strokeStyle = '#38bdf8';
-             ctx.lineWidth = 3;
-             ctx.stroke();
-        }
         
-        // Magnet Effect
-        if (hasMagnetRef.current) {
-            const magScale = (frameCountRef.current % 20) / 20;
-            ctx.beginPath();
-            ctx.arc(0, 0, size * (0.5 + magScale), 0, Math.PI * 2);
-            ctx.strokeStyle = `rgba(168, 85, 247, ${1 - magScale})`;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
+        // Shadow on Floor
+        const pFloor = project(p.x, VIRTUAL_FLOOR_Y, p.z, canvas.width, canvas.height);
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0); 
+        ctx.fillStyle = skin.accent;
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath();
+        ctx.ellipse(pFloor.x, pFloor.y, 40 * pScale, 10 * pScale, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.strokeStyle = skin.accent;
+        ctx.lineWidth = 1;
+        ctx.moveTo(px, py);
+        ctx.lineTo(pFloor.x, pFloor.y);
+        ctx.stroke();
+        ctx.restore();
 
-        // Draw Specific Models
+        // Engine Trail
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = skin.accent;
+        ctx.fillStyle = skin.accent;
+        ctx.beginPath();
+        ctx.moveTo(-size/4, size/3);
+        ctx.lineTo(0, size + (Math.random() * size)); 
+        ctx.lineTo(size/4, size/3);
+        ctx.fill();
+
+        // Skin Render
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = skin.color;
+        
         if (skin.model === 'biplane') {
-            // Biplane
             ctx.fillStyle = skin.color;
             ctx.fillRect(-size/1.5, -size/3, size*1.33, size/6);
             ctx.fillRect(-size/1.5, size/10, size*1.33, size/6);
-            ctx.fillStyle = '#525252';
+            ctx.fillStyle = '#cbd5e1'; 
             ctx.fillRect(-size/2, -size/3, size/10, size/2);
             ctx.fillRect(size/2 - size/10, -size/3, size/10, size/2);
-            ctx.fillStyle = skin.accent;
+            ctx.fillStyle = 'white';
+            ctx.globalAlpha = 0.6;
             ctx.beginPath();
-            ctx.ellipse(0, 0, size/6, size/3, 0, 0, Math.PI*2);
+            ctx.arc(0, -size/2.5, size/2.5, 0, Math.PI*2);
             ctx.fill();
-            ctx.fillStyle = skin.color;
-            ctx.beginPath();
-            ctx.moveTo(0, -size/3);
-            ctx.lineTo(0, -size/1.8);
-            ctx.lineTo(size/10, -size/3);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.beginPath();
-            ctx.arc(0, 0, size/2.5, 0, Math.PI*2);
-            ctx.fill();
-
         } else if (skin.model === 'ufo') {
-            // UFO
-            ctx.fillStyle = '#60a5fa'; 
-            ctx.beginPath();
-            ctx.arc(0, -size/6, size/4, Math.PI, 0);
-            ctx.fill();
             ctx.fillStyle = skin.color;
             ctx.beginPath();
             ctx.ellipse(0, 0, size/1.2, size/4, 0, 0, Math.PI*2);
             ctx.fill();
-            ctx.fillStyle = skin.accent;
-            for(let i=0; i<5; i++) {
-                const lx = (i - 2) * (size/3);
+            ctx.fillStyle = skin.accent; 
+            ctx.beginPath();
+            ctx.arc(0, -size/8, size/3, Math.PI, 0);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            for(let i=0; i<3; i++) {
                 ctx.beginPath();
-                ctx.arc(lx, size/8, size/12, 0, Math.PI*2);
+                ctx.arc((i-1)*size/2, size/8, size/12, 0, Math.PI*2);
                 ctx.fill();
             }
-             ctx.shadowBlur = 15;
-             ctx.shadowColor = skin.accent;
-             ctx.fillStyle = skin.accent;
-             ctx.beginPath();
-             ctx.ellipse(0, size/8, size/2, size/8, 0, 0, Math.PI*2);
-             ctx.fill();
-             ctx.shadowBlur = 0;
-
         } else {
-            // Jet (Default)
             ctx.fillStyle = skin.color;
             ctx.beginPath();
-            ctx.moveTo(0, -size/3);
-            ctx.lineTo(size/5, size/3);
-            ctx.lineTo(-size/5, size/3);
+            ctx.moveTo(0, -size/2);
+            ctx.lineTo(size, size/2);
+            ctx.lineTo(-size, size/2);
+            ctx.fill();
+            ctx.fillStyle = '#e2e8f0';
+            ctx.beginPath();
+            ctx.moveTo(0, -size/1.5);
+            ctx.lineTo(size/6, size/2);
+            ctx.lineTo(-size/6, size/2);
             ctx.fill();
             ctx.fillStyle = skin.accent;
             ctx.beginPath();
-            ctx.moveTo(0, 0);
-            ctx.lineTo(size/1.1, size/4);
-            ctx.lineTo(size/1.1, size/2.5);
-            ctx.lineTo(0, size/3);
-            ctx.fill(); 
-            ctx.beginPath();
-            ctx.moveTo(0, 0);
-            ctx.lineTo(-size/1.1, size/4);
-            ctx.lineTo(-size/1.1, size/2.5);
-            ctx.lineTo(0, size/3);
+            ctx.moveTo(0, -size/4);
+            ctx.lineTo(size/8, size/8);
+            ctx.lineTo(-size/8, size/8);
             ctx.fill();
-            ctx.fillStyle = skin.color;
-            ctx.beginPath();
-            ctx.moveTo(0, -size/3);
-            ctx.lineTo(0, -size/1.5);
-            ctx.lineTo(size/8, -size/3);
-            ctx.fill();
+        }
+        
+        // Shield
+        if (hasShieldRef.current) {
+             ctx.beginPath();
+             ctx.arc(0, 0, size * 1.1, 0, Math.PI * 2);
+             ctx.strokeStyle = '#38bdf8';
+             ctx.lineWidth = 3;
+             ctx.shadowBlur = 10;
+             ctx.shadowColor = '#0ea5e9';
+             ctx.stroke();
+             ctx.fillStyle = 'rgba(56, 189, 248, 0.05)';
+             ctx.fill();
+        }
+        
+        ctx.restore();
+
+        // SMART RETICLE
+        // Check if there is an enemy roughly in front of the player
+        const aimZ = p.z + 1500;
+        let hasTarget = false;
+        
+        // Simple raycast approximation
+        for(const ent of entitiesRef.current) {
+            if(ent.active && ent.type === EntityType.OBSTACLE_ASTEROID && ent.z > p.z + 200 && ent.z < aimZ) {
+                if(Math.abs(ent.x - p.x) < ent.width) {
+                    hasTarget = true;
+                    break;
+                }
+            }
+        }
+
+        const { x: rx, y: ry } = project(p.x, p.y, p.z + 800, canvas.width, canvas.height);
+        
+        ctx.save();
+        ctx.strokeStyle = hasTarget ? '#ef4444' : 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = hasTarget ? 4 : 2;
+        if(hasTarget) {
             ctx.shadowBlur = 10;
-            ctx.shadowColor = '#f59e0b';
-            ctx.fillStyle = '#f59e0b';
-            ctx.beginPath();
-            ctx.arc(0, size/3, size/8, 0, Math.PI*2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
+            ctx.shadowColor = '#ef4444';
+        }
+
+        ctx.beginPath();
+        // Crosshair shape
+        const rSize = hasTarget ? 15 : 10;
+        ctx.moveTo(rx - rSize, ry); ctx.lineTo(rx + rSize, ry);
+        ctx.moveTo(rx, ry - rSize); ctx.lineTo(rx, ry + rSize);
+        ctx.stroke();
+
+        // Circle around if target
+        if(hasTarget) {
+             ctx.beginPath();
+             ctx.arc(rx, ry, rSize * 1.5, 0, Math.PI*2);
+             ctx.stroke();
         }
 
         ctx.restore();
     }
 
-    // 6. Draw Particles
-    particlesRef.current.forEach(pt => {
-        pt.x += pt.vx;
-        pt.y += pt.vy;
-        pt.z += pt.vz;
-        pt.life -= 0.02;
-    });
-    particlesRef.current = particlesRef.current.filter(pt => pt.life > 0);
-    
+    // PARTICLES
     particlesRef.current.forEach(pt => {
         const { x, y, scale } = project(pt.x, pt.y, pt.z, canvas.width, canvas.height);
-        if (pt.z > -FOCAL_LENGTH) {
+        if (pt.z > -FOCAL_LENGTH && pt.life > 0) {
             ctx.globalAlpha = pt.life;
             ctx.fillStyle = pt.color;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = pt.color;
             ctx.beginPath();
             ctx.arc(x, y, pt.size * scale, 0, Math.PI*2);
             ctx.fill();
+            ctx.shadowBlur = 0;
             ctx.globalAlpha = 1.0;
         }
     });
 
-    // 7. Draw Floating Texts
-    floatingTextsRef.current.forEach(ft => {
-        ft.y += ft.velocity;
-        ft.life -= 0.015;
+    // FLOATING TEXT
+    floatingTextsRef.current.forEach((ft, index) => {
+        if (ft.type === FloatingTextType.SCORE) {
+            const { x, y, scale } = project(ft.x, ft.y, ft.z, canvas.width, canvas.height);
+            ctx.font = `900 ${Math.floor(24 * scale)}px sans-serif`; 
+            ctx.fillStyle = ft.color;
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 4;
+            ctx.globalAlpha = Math.max(0, ft.life);
+            
+            ctx.strokeText(ft.text, x, y);
+            ctx.fillText(ft.text, x, y);
+            ctx.globalAlpha = 1.0;
+            
+            ft.life -= 0.02;
+            ft.y += ft.velocity;
+            
+            if (ft.life <= 0) floatingTextsRef.current.splice(index, 1);
+        }
     });
-    floatingTextsRef.current = floatingTextsRef.current.filter(ft => ft.life > 0);
-
-    ctx.restore(); // Restore shake context
     
-    floatingTextsRef.current.forEach(ft => {
-        const { x, y, scale } = project(ft.x, ft.y, ft.z, canvas.width, canvas.height);
-        ctx.font = `bold ${Math.floor(20 * scale)}px monospace`;
-        ctx.fillStyle = ft.color;
-        ctx.globalAlpha = Math.max(0, ft.life);
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 3;
-        ctx.strokeText(ft.text, x, y);
-        ctx.fillText(ft.text, x, y);
+    // NOTIFICATIONS
+    const notifications = floatingTextsRef.current.filter(ft => ft.type === FloatingTextType.NOTIFICATION);
+    notifications.forEach((notif, i) => {
+        const yPos = 120 + (i * 30);
+        const xPos = canvas.width / 2;
+        
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.globalAlpha = Math.max(0, notif.life);
+        
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'black';
+        ctx.fillStyle = notif.color;
+        ctx.fillText(notif.text, xPos, yPos);
+        
+        ctx.shadowBlur = 0;
         ctx.globalAlpha = 1.0;
+
+        notif.life -= 0.015;
+        if (notif.life <= 0) {
+            const idx = floatingTextsRef.current.indexOf(notif);
+            if (idx > -1) floatingTextsRef.current.splice(idx, 1);
+        }
     });
 
-    // 8. HUD
+    ctx.restore();
+
+    // HUD
     if (gameState === GameState.PLAYING) {
         ctx.font = 'bold 24px monospace';
-        ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'left';
+        ctx.shadowColor = 'black';
+        ctx.shadowBlur = 4;
+
+        ctx.fillStyle = '#ffffff';
         ctx.fillText(`SCORE: ${scoreRef.current}`, 20, 40);
         
         ctx.fillStyle = '#fcd34d';
         ctx.fillText(`COINS: ${coinsSessionRef.current}`, 20, 70);
         
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(`SPEED: ${(speedRef.current * 10).toFixed(0)} km/h`, 20, 100);
+        const speedKmh = (speedRef.current * 10).toFixed(0);
+        const speedScale = 1 + (speedRef.current / MAX_SPEED) * 0.2;
+        ctx.save();
+        ctx.translate(20, 100);
+        ctx.scale(speedScale, speedScale);
+        ctx.fillStyle = '#22d3ee';
+        ctx.fillText(`SPEED: ${speedKmh} KM/H`, 0, 0);
+        ctx.restore();
 
-        // Powerup Status
+        ctx.shadowBlur = 0;
+
         let statusY = 140;
-        if (hasShieldRef.current) {
-            ctx.fillStyle = '#0ea5e9';
-            const w = (shieldTimeRef.current / SHIELD_DURATION) * 100;
-            ctx.fillRect(20, statusY, w, 10);
-            ctx.fillText('SHIELD', 20, statusY - 5);
-            statusY += 40;
-        }
-        if (hasMagnetRef.current) {
-            ctx.fillStyle = '#a855f7';
-            const w = (magnetTimeRef.current / MAGNET_DURATION) * 100;
-            ctx.fillRect(20, statusY, w, 10);
-            ctx.fillText('MAGNET', 20, statusY - 5);
-            statusY += 40;
-        }
-        if (hasRapidFireRef.current) {
-            ctx.fillStyle = '#ef4444';
-            const w = (rapidFireTimeRef.current / RAPID_FIRE_DURATION) * 100;
-            ctx.fillRect(20, statusY, w, 10);
-            ctx.fillText('RAPID FIRE', 20, statusY - 5);
-            statusY += 40;
-        }
-        if (hasTripleShotRef.current) {
-            ctx.fillStyle = '#22c55e';
-            const w = (tripleShotTimeRef.current / TRIPLE_SHOT_DURATION) * 100;
-            ctx.fillRect(20, statusY, w, 10);
-            ctx.fillText('TRIPLE SHOT', 20, statusY - 5);
-            statusY += 40;
-        }
+        const drawBar = (label: string, time: number, max: number, color: string) => {
+            if (time <= 0) return;
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(20, statusY, 150, 16);
+            ctx.fillStyle = color;
+            const w = (time / max) * 150;
+            ctx.fillRect(20, statusY, w, 16);
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillText(label, 25, statusY + 12);
+            statusY += 25;
+        };
+
+        drawBar('SHIELD', shieldTimeRef.current, SHIELD_DURATION, '#0ea5e9');
+        drawBar('MAGNET', magnetTimeRef.current, MAGNET_DURATION, '#a855f7');
+        drawBar('RAPID FIRE', rapidFireTimeRef.current, RAPID_FIRE_DURATION, '#f43f5e');
+        drawBar('TRIPLE SHOT', tripleShotTimeRef.current, TRIPLE_SHOT_DURATION, '#4ade80');
     }
 
   }, [gameState, skin, onCoinCollected, onGameOver, fireLaser]);
 
-  // Main Loop Trigger
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -910,7 +1056,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => cancelAnimationFrame(requestRef.current);
   }, [update, gameState]);
 
-  // Handle Resize
   useEffect(() => {
     const handleResize = () => {
         if (canvasRef.current) {
@@ -923,7 +1068,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Reset Game Logic
   useEffect(() => {
     if (gameState === GameState.PLAYING) {
         entitiesRef.current = [];
@@ -939,7 +1083,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         hasRapidFireRef.current = false;
         hasTripleShotRef.current = false;
         shakeRef.current = 0;
-        playerPosRef.current = { x: 0, y: 0, z: NEAR_Z, tilt: 0 };
+        isCrashingRef.current = false;
+        isFiringRef.current = false;
+        playerPosRef.current = { x: 0, y: 0, z: NEAR_Z - 50, tilt: 0 };
         targetPosRef.current = { x: 0, y: 0 };
     }
   }, [gameState]);
@@ -948,17 +1094,16 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     <>
       <canvas 
         ref={canvasRef}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
         onPointerMove={handlePointerMove}
-        className="absolute top-0 left-0 w-full h-full cursor-none touch-none"
+        className="absolute top-0 left-0 w-full h-full cursor-none touch-none bg-black"
       />
-      {gameState === GameState.PLAYING && (
-        <button
-          className="absolute bottom-8 right-8 w-24 h-24 bg-red-600/80 rounded-full border-4 border-red-400 text-white font-black text-xl shadow-[0_0_20px_rgba(239,68,68,0.6)] active:scale-95 active:bg-red-500 transition-transform z-30 flex items-center justify-center md:hidden"
-          onClick={(e) => { e.stopPropagation(); fireLaser(); }}
-        >
-          FIRE
-        </button>
-      )}
+      {/* 
+        REMOVED: Old Fire Button 
+        REASON: We now use "Hold to Fire" on the entire screen, rendering the button obsolete and confusing.
+      */}
     </>
   );
 };

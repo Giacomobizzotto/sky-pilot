@@ -1,3 +1,4 @@
+
 export enum GameState {
   MENU = 'MENU',
   PLAYING = 'PLAYING',
@@ -35,6 +36,16 @@ export interface Entity extends Point3D {
   active: boolean;
   rotation?: number; 
   speedZ?: number;
+  
+  // Physics
+  vx?: number; // Velocity X (for angled bullets)
+
+  // Combat
+  hp?: number;
+  maxHp?: number;
+  
+  // Loot
+  autoCollect?: boolean; // If true, automatically flies to player (dropped from enemies)
 }
 
 export interface Particle extends Point3D {
@@ -47,12 +58,18 @@ export interface Particle extends Point3D {
   size: number;
 }
 
+export enum FloatingTextType {
+  SCORE = 'SCORE',      // Floats in 3D world space (damage numbers, score)
+  NOTIFICATION = 'NOTIFICATION' // Fixed on HUD (Powerups, Status)
+}
+
 export interface FloatingText extends Point3D {
   id: number;
   text: string;
   color: string;
   life: number; // 1.0 to 0
   velocity: number;
+  type: FloatingTextType;
 }
 
 export interface PlaneSkin {
